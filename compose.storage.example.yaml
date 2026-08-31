@@ -1,0 +1,11 @@
+# Usage:
+#   set ARCHIVE_HOST_PATH=D:/HiokiProjectArchives
+#   docker compose -f compose.yaml -f compose.storage.example.yaml up -d --build
+# A UNC path may also be used when Docker Desktop can access it.
+services:
+  backend:
+    volumes:
+      - type: bind
+        source: ${ARCHIVE_HOST_PATH:?Set ARCHIVE_HOST_PATH to an absolute host path}
+        target: /data/archives
+

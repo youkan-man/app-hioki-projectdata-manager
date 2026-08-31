@@ -1,0 +1,17 @@
+.git
+.agents
+.sandbox
+.codex
+.env
+.env.*
+!.env.example
+.certs
+**/node_modules
+**/dist
+**/__pycache__
+**/.pytest_cache
+**/*.pyc
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
+backend/tests
