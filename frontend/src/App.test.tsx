@@ -5,9 +5,48 @@ import App from './App'
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
 })
 
 describe('project and version notes', () => {
+  it('prioritizes the project column and downloads the latest ZIP without expanding history', async () => {
+    const activeUuid = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+    const deletedUuid = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+    const projects = { items: [
+      { id: '11111111-1111-1111-1111-111111111111', source_uuid: activeUuid, name: 'Active project', description: null, created_at: '2026-08-01T00:00:00Z', updated_at: '2026-08-02T00:00:00Z', deleted_at: null, versions: [{ id: '22222222-2222-2222-2222-222222222222', version_number: 3, size_bytes: 1200, note: 'active latest', created_at: '2026-08-02T00:00:00Z' }] },
+      { id: '33333333-3333-3333-3333-333333333333', source_uuid: deletedUuid, name: 'Deleted project', description: null, created_at: '2026-08-01T00:00:00Z', updated_at: '2026-08-03T00:00:00Z', deleted_at: '2026-08-04T00:00:00Z', versions: [{ id: '44444444-4444-4444-4444-444444444444', version_number: 5, size_bytes: 2400, note: 'deleted latest', created_at: '2026-08-03T00:00:00Z' }] },
+      { id: '55555555-5555-5555-5555-555555555555', source_uuid: 'cccccccc-cccc-cccc-cccc-cccccccccccc', name: 'Empty project', description: null, created_at: '2026-08-01T00:00:00Z', updated_at: '2026-08-01T00:00:00Z', deleted_at: null, versions: [] },
+    ], total: 3 }
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      return Promise.resolve(url.endsWith('/archive') ? new Response(new Blob(['zip']), { status: 200 }) : new Response(JSON.stringify(projects), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    class TestURL extends URL {
+      static createObjectURL = vi.fn(() => 'blob:test-archive')
+      static revokeObjectURL = vi.fn()
+    }
+    vi.stubGlobal('URL', TestURL)
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
+
+    render(<App />)
+    expect(await screen.findByText('Active project')).not.toBeNull()
+    expect(screen.queryByRole('columnheader', { name: 'UUID' })).toBeNull()
+    expect(screen.queryByText(activeUuid)).toBeNull()
+    expect(screen.queryByText(deletedUuid)).toBeNull()
+    expect(screen.getByRole('columnheader', { name: 'プロジェクト' }).classList.contains('project-column')).toBe(true)
+    expect(screen.queryByText('active latest')).toBeNull()
+
+    const latestButtons = screen.getAllByRole('button', { name: /最新バージョンZIPをダウンロード/ })
+    expect(latestButtons).toHaveLength(3)
+    expect(screen.getByRole('button', { name: 'Empty project の最新バージョンZIPをダウンロード' }).hasAttribute('disabled')).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Active project の最新バージョンZIPをダウンロード' }))
+    await vi.waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/versions/22222222-2222-2222-2222-222222222222/archive'))).toBe(true))
+    fireEvent.click(screen.getByRole('button', { name: 'Deleted project の最新バージョンZIPをダウンロード' }))
+    await vi.waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/versions/44444444-4444-4444-4444-444444444444/archive'))).toBe(true))
+    await new Promise((resolve) => setTimeout(resolve, 1050))
+  })
+
   it('renders notes on dedicated second rows', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
       items: [{
