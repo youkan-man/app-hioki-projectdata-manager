@@ -1,6 +1,8 @@
 export type Brand<T, Name extends string> = T & { readonly __brand: Name }
 export type ProjectId = Brand<string, 'ProjectId'>
 export type VersionId = Brand<string, 'VersionId'>
+export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
+export type JsonObject = { [key: string]: JsonValue }
 
 export interface ProjectVersion {
   id: VersionId
@@ -30,12 +32,21 @@ export interface DiscoveredProject {
   directory: FileSystemDirectoryHandle
 }
 
+export interface ProjectConfiguration {
+  filename: string
+  version: number
+  config: JsonObject
+  layoutFilename: string | null
+  layout: JsonObject | null
+}
+
 export type ModalState =
   | { kind: 'closed' }
   | { kind: 'register' }
   | { kind: 'edit'; project: Project }
   | { kind: 'delete'; project: Project }
   | { kind: 'restore-record'; project: Project }
+  | { kind: 'configuration'; project: Project }
   | { kind: 'settings' }
 
 export interface RestoreTarget {

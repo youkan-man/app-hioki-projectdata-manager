@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import io
 import hashlib
+import io
+import json
 import stat
 import uuid
 import zipfile
@@ -21,7 +22,10 @@ def make_zip(
 ) -> bytes:
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr(f"{name}.gprj", b"gennect-project")
+        archive.writestr(
+            f"{name}.gprj",
+            json.dumps({"id": str(source_uuid), "name": name}).encode("utf-8"),
+        )
         for path, content in (extra or {}).items():
             archive.writestr(path, content)
     return output.getvalue()
@@ -30,8 +34,33 @@ def make_zip(
 def make_legacy_zip(source_uuid: uuid.UUID, name: str = "Legacy") -> bytes:
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr(f"{source_uuid}/{name}.gprj", b"legacy-project")
+        archive.writestr(
+            f"{source_uuid}/{name}.gprj",
+            json.dumps({"id": str(source_uuid), "name": name}).encode("utf-8"),
+        )
         archive.writestr(f"{source_uuid}/attachments/readme.txt", b"legacy-data")
+    return output.getvalue()
+
+
+def make_configuration_zip(
+    name: str,
+    project: object,
+    layout: object | None = None,
+    extra: dict[str, bytes] | None = None,
+) -> bytes:
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            f"{name}.gprj",
+            json.dumps(project, ensure_ascii=False).encode("utf-8"),
+        )
+        if layout is not None:
+            archive.writestr(
+                "layout.lay",
+                json.dumps(layout, ensure_ascii=False).encode("utf-8"),
+            )
+        for path, content in (extra or {}).items():
+            archive.writestr(path, content)
     return output.getvalue()
 
 
@@ -44,6 +73,7 @@ def client(tmp_path: Path):
             max_upload_bytes=10 * 1024 * 1024,
             max_archive_entries=5,
             max_uncompressed_bytes=20 * 1024 * 1024,
+            max_configuration_bytes=1024,
         )
     )
     with TestClient(app) as test_client:
@@ -89,7 +119,12 @@ def test_import_versions_download_and_soft_delete(client):
         f"/api/projects/{project_id}/versions/{version_id}/archive"
     )
     assert downloaded.status_code == 200
-    assert downloaded.content == make_zip(source_uuid, "Demo")
+    with zipfile.ZipFile(io.BytesIO(downloaded.content)) as archive:
+        assert archive.namelist() == ["Demo.gprj"]
+        assert json.loads(archive.read("Demo.gprj")) == {
+            "id": str(source_uuid),
+            "name": "Demo",
+        }
 
     deleted = test_client.delete(f"/api/projects/{project_id}")
     assert deleted.status_code == 200
@@ -111,7 +146,7 @@ def test_archive_metadata_must_match(client):
         data={"source_uuid": str(uuid.uuid4()), "project_name": "Wrong"},
         files={"archive": ("project.zip", make_zip(source_uuid), "application/zip")},
     )
-    assert response.status_code == 422
+    assert response.status_code == 400
     assert test_client.get("/api/projects").json()["total"] == 0
 
 
@@ -308,3 +343,205 @@ def test_rebuilds_and_downloads_legacy_stored_archive(client):
             "attachments/readme.txt",
         ]
         assert all(not name.startswith(f"{source_uuid}/") for name in archive.namelist())
+
+
+def test_reads_and_edits_project_and_layout_as_one_new_version(client):
+    test_client, tmp_path = client
+    source_uuid = uuid.uuid4()
+    original_project = {
+        "id": str(source_uuid),
+        "instrument": "MR6000",
+        "channels": [1, 2],
+    }
+    original_layout = {"panels": [{"id": "main", "x": 10}]}
+    preserved = {
+        "settings/device.set": b"\x00\xff\x01device-settings",
+        "layouts/secondary.lay": b"not-the-root-layout",
+    }
+    original_zip = make_configuration_zip(
+        "Editable", original_project, original_layout, preserved
+    )
+    imported = test_client.post(
+        "/api/projects/import",
+        data={"source_uuid": str(source_uuid)},
+        files={"archive": (f"{source_uuid}.zip", original_zip, "application/zip")},
+    )
+    assert imported.status_code == 201, imported.text
+    project_id = imported.json()["id"]
+    version_one_id = imported.json()["versions"][0]["id"]
+
+    current = test_client.get(f"/api/projects/{project_id}/configuration")
+    assert current.status_code == 200, current.text
+    assert current.json() == {
+        "version": 1,
+        "project": {"filename": "Editable.gprj", "config": original_project},
+        "layout": {"filename": "layout.lay", "config": original_layout},
+    }
+
+    edited_project = {
+        "id": str(source_uuid),
+        "instrument": "MR6000",
+        "channels": [2, 4],
+        "enabled": True,
+    }
+    edited_layout = {"panels": [{"id": "main", "x": 42}], "theme": "dark"}
+    edited = test_client.put(
+        f"/api/projects/{project_id}/configuration",
+        json={
+            "project": edited_project,
+            "layout": edited_layout,
+            "note": "edited JSON configuration",
+        },
+    )
+    assert edited.status_code == 200, edited.text
+    assert [item["version_number"] for item in edited.json()["versions"]] == [2, 1]
+    assert edited.json()["versions"][0]["note"] == "edited JSON configuration"
+    assert len(list((tmp_path / "archives" / str(source_uuid)).glob("*.zip"))) == 2
+
+    latest = test_client.get(f"/api/projects/{project_id}/configuration")
+    assert latest.json()["version"] == 2
+    assert latest.json()["project"]["config"] == edited_project
+    assert latest.json()["layout"]["config"] == edited_layout
+
+    old_download = test_client.get(
+        f"/api/projects/{project_id}/versions/{version_one_id}/archive"
+    )
+    assert old_download.content == original_zip
+    version_two_id = edited.json()["versions"][0]["id"]
+    new_download = test_client.get(
+        f"/api/projects/{project_id}/versions/{version_two_id}/archive"
+    )
+    with zipfile.ZipFile(io.BytesIO(new_download.content)) as archive:
+        assert json.loads(archive.read("Editable.gprj")) == edited_project
+        assert json.loads(archive.read("layout.lay")) == edited_layout
+        for path, content in preserved.items():
+            assert archive.read(path) == content
+
+
+def test_missing_layout_is_null_and_can_be_created(client):
+    test_client, _ = client
+    source_uuid = uuid.uuid4()
+    imported = test_client.post(
+        "/api/projects/import",
+        data={"source_uuid": str(source_uuid)},
+        files={
+            "archive": (
+                f"{source_uuid}.zip",
+                make_configuration_zip(
+                    "NoLayout", {"id": str(source_uuid), "sample": 1}
+                ),
+                "application/zip",
+            )
+        },
+    )
+    project_id = imported.json()["id"]
+    assert test_client.get(f"/api/projects/{project_id}/configuration").json()[
+        "layout"
+    ] is None
+
+    unchanged_missing = test_client.put(
+        f"/api/projects/{project_id}/configuration",
+        json={"project": {"id": str(source_uuid), "sample": 2}, "layout": None},
+    )
+    assert unchanged_missing.status_code == 200, unchanged_missing.text
+    assert test_client.get(f"/api/projects/{project_id}/configuration").json()[
+        "layout"
+    ] is None
+
+    created = test_client.put(
+        f"/api/projects/{project_id}/configuration",
+        json={
+            "project": {"id": str(source_uuid), "sample": 3},
+            "layout": {"created": True},
+        },
+    )
+    assert created.status_code == 200, created.text
+    configuration = test_client.get(
+        f"/api/projects/{project_id}/configuration"
+    ).json()
+    assert configuration["version"] == 3
+    assert configuration["layout"] == {
+        "filename": "layout.lay",
+        "config": {"created": True},
+    }
+
+
+def test_configuration_boundaries_and_deleted_project(client):
+    test_client, _ = client
+    source_uuid = uuid.uuid4()
+    imported = test_client.post(
+        "/api/projects/import",
+        data={"source_uuid": str(source_uuid)},
+        files={
+            "archive": (
+                f"{source_uuid}.zip",
+                make_configuration_zip(
+                    "Boundary",
+                    {"id": str(source_uuid), "ok": True},
+                    {"layout": True},
+                ),
+                "application/zip",
+            )
+        },
+    )
+    project_id = imported.json()["id"]
+
+    non_object = test_client.put(
+        f"/api/projects/{project_id}/configuration",
+        json={"project": [], "layout": {}},
+    )
+    assert non_object.status_code == 422
+    changed_id = test_client.put(
+        f"/api/projects/{project_id}/configuration",
+        json={"project": {"id": str(uuid.uuid4())}, "layout": {}},
+    )
+    assert changed_id.status_code == 422
+    missing_existing_layout = test_client.put(
+        f"/api/projects/{project_id}/configuration",
+        json={"project": {"id": str(source_uuid)}, "layout": None},
+    )
+    assert missing_existing_layout.status_code == 422
+    oversized = test_client.put(
+        f"/api/projects/{project_id}/configuration",
+        json={
+            "project": {"id": str(source_uuid), "data": "x" * 2000},
+            "layout": {},
+        },
+    )
+    assert oversized.status_code == 422
+
+    test_client.delete(f"/api/projects/{project_id}")
+    deleted_configuration = test_client.get(
+        f"/api/projects/{project_id}/configuration"
+    )
+    assert deleted_configuration.status_code == 200
+    blocked = test_client.put(
+        f"/api/projects/{project_id}/configuration",
+        json={
+            "project": {"id": str(source_uuid), "changed": True},
+            "layout": {},
+        },
+    )
+    assert blocked.status_code == 409
+    listed = test_client.get("/api/projects?include_deleted=true").json()["items"][0]
+    assert len(listed["versions"]) == 1
+
+
+def test_get_configuration_rejects_stored_project_id_mismatch(client):
+    test_client, _ = client
+    source_uuid = uuid.uuid4()
+    imported = test_client.post(
+        "/api/projects/import",
+        data={"source_uuid": str(source_uuid)},
+        files={
+            "archive": (
+                f"{source_uuid}.zip",
+                make_configuration_zip(
+                    "WrongIdentity", {"id": str(uuid.uuid4()), "value": 1}
+                ),
+                "application/zip",
+            )
+        },
+    )
+    assert imported.status_code == 400
+    assert "does not match" in imported.json()["detail"]

@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 
 class VersionRead(BaseModel):
@@ -47,3 +47,20 @@ class RebuildResult(BaseModel):
     projects_created: int
     versions_created: int
     archives_skipped: int
+
+
+class ConfigurationFileRead(BaseModel):
+    filename: str
+    config: dict[str, JsonValue]
+
+
+class ConfigurationRead(BaseModel):
+    version: int
+    project: ConfigurationFileRead
+    layout: ConfigurationFileRead | None
+
+
+class ConfigurationUpdate(BaseModel):
+    project: dict[str, JsonValue]
+    layout: dict[str, JsonValue] | None
+    note: str | None = Field(default=None, max_length=10_000)

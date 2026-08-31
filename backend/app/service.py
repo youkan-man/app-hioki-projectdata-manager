@@ -9,13 +9,29 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
-from .archives import ArchiveValidationError, ValidatedArchive, validate_stored
+from .archives import (
+    ArchiveIdentityError,
+    ArchiveValidationError,
+    ConfigurationDocument,
+    ValidatedArchive,
+    read_configuration,
+    replace_configuration,
+    validate_stored,
+)
 from .config import Settings
 from .models import Project, ProjectVersion
 from .storage import ArchiveStorage
 
 
 class ProjectDeletedError(RuntimeError):
+    pass
+
+
+class ProjectNotFoundError(LookupError):
+    pass
+
+
+class ProjectHasNoVersionsError(LookupError):
     pass
 
 
@@ -55,6 +71,16 @@ def import_archive(
         if project.display_name == old_project_name:
             project.display_name = archive.project_name
 
+    return _append_version(session, storage, project, archive, note)
+
+
+def _append_version(
+    session: Session,
+    storage: ArchiveStorage,
+    project: Project,
+    archive: ValidatedArchive,
+    note: str | None,
+) -> Project:
     # Saving a new version is also the project's latest activity.
     project.updated_at = datetime.now(timezone.utc)
 
@@ -80,6 +106,96 @@ def import_archive(
     session.flush()
     session.refresh(project)
     return project
+
+
+def _latest_version(session: Session, project_id: uuid.UUID) -> ProjectVersion:
+    version = session.scalar(
+        select(ProjectVersion)
+        .where(ProjectVersion.project_id == project_id)
+        .order_by(ProjectVersion.version_number.desc())
+        .limit(1)
+    )
+    if version is None:
+        raise ProjectHasNoVersionsError("Project has no stored versions")
+    return version
+
+
+def _validate_version_identity(project: Project, version: ProjectVersion) -> None:
+    expected_key = (
+        f"{project.source_uuid}/"
+        f"{version.version_number:08d}-{version.sha256}.zip"
+    )
+    if version.project_id != project.id or version.archive_key != expected_key:
+        raise ArchiveIdentityError(
+            "Project, version, and archive identity do not match"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigurationState:
+    version_number: int
+    document: ConfigurationDocument
+
+
+def get_latest_configuration(
+    session: Session,
+    storage: ArchiveStorage,
+    settings: Settings,
+    project_id: uuid.UUID,
+) -> ConfigurationState:
+    project = session.scalar(select(Project).where(Project.id == project_id))
+    if project is None:
+        raise ProjectNotFoundError("Project not found")
+    version = _latest_version(session, project.id)
+    _validate_version_identity(project, version)
+    with storage.open(version.archive_key) as archive_file:
+        document: ConfigurationDocument = read_configuration(
+            archive_file,
+            settings,
+            project.source_uuid,
+            version.sha256,
+        )
+    return ConfigurationState(
+        version_number=version.version_number,
+        document=document,
+    )
+
+
+def update_latest_configuration(
+    session: Session,
+    storage: ArchiveStorage,
+    settings: Settings,
+    project_id: uuid.UUID,
+    project_config: dict[str, object],
+    layout_config: dict[str, object] | None,
+    note: str | None,
+) -> Project:
+    candidate = session.scalar(select(Project).where(Project.id == project_id))
+    if candidate is None:
+        raise ProjectNotFoundError("Project not found")
+    _lock_source_uuid(session, candidate.source_uuid)
+    project = session.scalar(
+        select(Project).where(Project.id == project_id).with_for_update()
+    )
+    if project is None:
+        raise ProjectNotFoundError("Project not found")
+    if project.deleted_at is not None:
+        raise ProjectDeletedError("Deleted projects cannot be configured")
+    version = _latest_version(session, project.id)
+    _validate_version_identity(project, version)
+    with storage.open(version.archive_key) as archive_file:
+        edited = replace_configuration(
+            archive_file,
+            settings,
+            project.source_uuid,
+            version.sha256,
+            project_config,
+            layout_config,
+        )
+    try:
+        return _append_version(session, storage, project, edited, note)
+    finally:
+        edited.path.unlink(missing_ok=True)
 
 
 @dataclass(slots=True)

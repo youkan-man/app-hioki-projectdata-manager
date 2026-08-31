@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -10,7 +11,7 @@ import uuid
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 from fastapi import UploadFile
 
@@ -43,6 +44,18 @@ class ValidatedArchive:
 class ArchiveLayout:
     project_name: str
     wrapped_uuid: uuid.UUID | None
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigurationFile:
+    filename: str
+    config: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigurationDocument:
+    project: ConfigurationFile
+    layout: ConfigurationFile | None
 
 
 _WINDOWS_INVALID = re.compile(r'[<>:"|?*\x00-\x1f]')
@@ -125,7 +138,7 @@ def _validate_zip(path: Path, settings: Settings) -> ArchiveLayout:
                 with archive.open(info, "r") as member:
                     while member.read(1024 * 1024):
                         pass
-        except (zipfile.BadZipFile, RuntimeError, OSError) as exc:
+        except (zipfile.BadZipFile, RuntimeError, NotImplementedError, OSError) as exc:
             raise ArchiveValidationError("ZIP entry data is corrupt or unsupported") from exc
 
         flat_gprj = [
@@ -218,10 +231,23 @@ def _flatten_legacy_archive(path: Path, settings: Settings) -> Path:
         raise
 
 
+def _copy_zip_info(info: zipfile.ZipInfo, filename: str) -> zipfile.ZipInfo:
+    target = zipfile.ZipInfo(filename, date_time=info.date_time)
+    target.compress_type = info.compress_type
+    target.comment = info.comment
+    target.external_attr = info.external_attr
+    target.create_system = info.create_system
+    return target
+
+
 def _canonicalize(archive: ValidatedArchive, settings: Settings) -> ValidatedArchive:
     if not archive.legacy_wrapped:
         return archive
-    canonical_path = _flatten_legacy_archive(archive.path, settings)
+    try:
+        canonical_path = _flatten_legacy_archive(archive.path, settings)
+    except Exception:
+        archive.path.unlink(missing_ok=True)
+        raise
     try:
         digest, size = _digest_file(canonical_path)
     except Exception:
@@ -276,7 +302,11 @@ async def receive_and_validate(
             size_bytes=stored_size,
             legacy_wrapped=layout.wrapped_uuid is not None,
         )
-        return _canonicalize(validated, settings)
+        validated = _canonicalize(validated, settings)
+        path = validated.path
+        document = _load_configuration(validated.path, settings)
+        _validate_project_config_id(document.project.config, resolved_uuid)
+        return validated
     except Exception:
         path.unlink(missing_ok=True)
         raise
@@ -323,3 +353,226 @@ def prepare_flat_download(
     """Copy a stored archive to a temporary canonical flat ZIP for download."""
     validated = validate_stored(file_object, settings, source_uuid)
     return _canonicalize(validated, settings).path
+
+
+def _configuration_members(
+    archive: zipfile.ZipFile,
+) -> tuple[zipfile.ZipInfo, zipfile.ZipInfo | None]:
+    project_matches = [
+        info
+        for info in archive.infolist()
+        if not info.is_dir()
+        and len(PurePosixPath(info.filename).parts) == 1
+        and PurePosixPath(info.filename).suffix.casefold() == ".gprj"
+    ]
+    if len(project_matches) != 1:
+        raise ArchiveValidationError(
+            "Canonical ZIP must contain exactly one root-level .gprj file"
+        )
+    layout_matches = [
+        info
+        for info in archive.infolist()
+        if not info.is_dir()
+        and len(PurePosixPath(info.filename).parts) == 1
+        and PurePosixPath(info.filename).name.casefold() == "layout.lay"
+    ]
+    if len(layout_matches) > 1:
+        raise ArchiveValidationError(
+            "Canonical ZIP may contain at most one root-level layout.lay file"
+        )
+    return project_matches[0], layout_matches[0] if layout_matches else None
+
+
+def _load_json_member(
+    archive: zipfile.ZipFile,
+    member: zipfile.ZipInfo,
+    settings: Settings,
+    label: str,
+) -> ConfigurationFile:
+    if member.file_size > settings.max_configuration_bytes:
+        raise ArchiveValidationError(
+            f"{label} configuration exceeds the configured size limit"
+        )
+    payload = archive.read(member)
+    try:
+        config = json.loads(payload.decode("utf-8-sig"))
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+        raise ArchiveValidationError(
+            f"The {label} configuration is not valid UTF-8 JSON"
+        ) from exc
+    if not isinstance(config, dict):
+        raise ArchiveValidationError(f"The {label} configuration JSON must be an object")
+    try:
+        json.dumps(config, allow_nan=False)
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise ArchiveValidationError(
+            f"The {label} configuration contains non-standard JSON values"
+        ) from exc
+    return ConfigurationFile(filename=member.filename, config=config)
+
+
+def _load_configuration(path: Path, settings: Settings) -> ConfigurationDocument:
+    try:
+        with zipfile.ZipFile(path, "r") as archive:
+            project_member, layout_member = _configuration_members(archive)
+            project = _load_json_member(
+                archive, project_member, settings, "project"
+            )
+            layout = (
+                _load_json_member(archive, layout_member, settings, "layout")
+                if layout_member is not None
+                else None
+            )
+    except (zipfile.BadZipFile, RuntimeError, NotImplementedError, OSError) as exc:
+        raise ArchiveValidationError("Project configuration could not be read") from exc
+    return ConfigurationDocument(project=project, layout=layout)
+
+
+def _validate_project_config_id(
+    config: dict[str, Any], source_uuid: uuid.UUID
+) -> None:
+    raw_id = config.get("id")
+    if not isinstance(raw_id, str):
+        raise ArchiveValidationError(
+            "Project configuration id must be the project source_uuid"
+        )
+    try:
+        config_uuid = uuid.UUID(raw_id)
+    except ValueError as exc:
+        raise ArchiveValidationError(
+            "Project configuration id must be a UUID"
+        ) from exc
+    if config_uuid != source_uuid or raw_id.lower() != str(source_uuid):
+        raise ArchiveValidationError(
+            "Project configuration id does not match the project source_uuid"
+        )
+
+
+def read_configuration(
+    file_object: BinaryIO,
+    settings: Settings,
+    source_uuid: uuid.UUID,
+    expected_sha256: str,
+) -> ConfigurationDocument:
+    validated = validate_stored(file_object, settings, source_uuid)
+    canonical = _canonicalize(validated, settings)
+    try:
+        if validated.sha256 != expected_sha256:
+            raise ArchiveIdentityError(
+                "Stored archive checksum does not match version metadata"
+            )
+        document = _load_configuration(canonical.path, settings)
+        _validate_project_config_id(document.project.config, source_uuid)
+        return document
+    finally:
+        canonical.path.unlink(missing_ok=True)
+
+
+def replace_configuration(
+    file_object: BinaryIO,
+    settings: Settings,
+    source_uuid: uuid.UUID,
+    expected_sha256: str,
+    project_config: dict[str, Any],
+    layout_config: dict[str, Any] | None,
+) -> ValidatedArchive:
+    _validate_project_config_id(project_config, source_uuid)
+    try:
+        project_bytes = (
+            json.dumps(
+                project_config,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            + "\n"
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ArchiveValidationError("Configuration is not valid JSON") from exc
+    if len(project_bytes) > settings.max_configuration_bytes:
+        raise ArchiveValidationError(
+            "Project configuration exceeds the configured size limit"
+        )
+    layout_bytes: bytes | None = None
+    if layout_config is not None:
+        try:
+            layout_bytes = (
+                json.dumps(
+                    layout_config,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                )
+                + "\n"
+            ).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            raise ArchiveValidationError("Layout configuration is not valid JSON") from exc
+        if len(layout_bytes) > settings.max_configuration_bytes:
+            raise ArchiveValidationError(
+                "Layout configuration exceeds the configured size limit"
+            )
+
+    validated = validate_stored(file_object, settings, source_uuid)
+    canonical = _canonicalize(validated, settings)
+    output_descriptor, output_name = tempfile.mkstemp(
+        prefix="gennect-configuration-", suffix=".zip"
+    )
+    os.close(output_descriptor)
+    output_path = Path(output_name)
+    try:
+        if validated.sha256 != expected_sha256:
+            raise ArchiveIdentityError(
+                "Stored archive checksum does not match version metadata"
+            )
+        current_document = _load_configuration(canonical.path, settings)
+        _validate_project_config_id(current_document.project.config, source_uuid)
+        with zipfile.ZipFile(canonical.path, "r") as source, zipfile.ZipFile(
+            output_path, "w", allowZip64=True
+        ) as output:
+            project_member, layout_member = _configuration_members(source)
+            if layout_member is not None and layout_bytes is None:
+                raise ArchiveValidationError(
+                    "layout must be a JSON object when the archive contains layout.lay"
+                )
+            for info in source.infolist():
+                target = _copy_zip_info(info, info.filename)
+                if info.is_dir():
+                    output.writestr(target, b"")
+                    continue
+                if info.filename == project_member.filename:
+                    output.writestr(target, project_bytes)
+                    continue
+                if layout_member is not None and info.filename == layout_member.filename:
+                    output.writestr(target, layout_bytes)
+                    continue
+                with source.open(info, "r") as source_member, output.open(
+                    target, "w", force_zip64=True
+                ) as target_member:
+                    shutil.copyfileobj(source_member, target_member, length=1024 * 1024)
+            if layout_member is None and layout_bytes is not None:
+                layout_info = zipfile.ZipInfo("layout.lay")
+                layout_info.compress_type = zipfile.ZIP_DEFLATED
+                output.writestr(layout_info, layout_bytes)
+        if output_path.stat().st_size > settings.max_upload_bytes:
+            raise ArchiveValidationError(
+                "Edited ZIP exceeds the configured size limit"
+            )
+        layout = _validate_zip(output_path, settings)
+        if layout.wrapped_uuid is not None:
+            raise ArchiveValidationError("Edited ZIP is not in canonical flat form")
+        digest, size = _digest_file(output_path)
+        return ValidatedArchive(
+            path=output_path,
+            source_uuid=source_uuid,
+            project_name=layout.project_name,
+            sha256=digest,
+            size_bytes=size,
+        )
+    except (zipfile.BadZipFile, RuntimeError, NotImplementedError, OSError) as exc:
+        output_path.unlink(missing_ok=True)
+        raise ArchiveValidationError("Project configuration could not be saved") from exc
+    except Exception:
+        output_path.unlink(missing_ok=True)
+        raise
+    finally:
+        canonical.path.unlink(missing_ok=True)

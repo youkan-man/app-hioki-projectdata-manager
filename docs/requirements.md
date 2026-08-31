@@ -19,6 +19,7 @@
 | RQ-013 | Linux Dockerホスト上で動作し、WindowsクライアントへLAN公開できる。 |
 | RQ-014 | リモートブラウザーから File System Access API を利用できるよう、任意の HTTPS 構成と証明書マウントを提供する。 |
 | RQ-015 | 社内ツール相当の最低限の防御として入力検証、ZIP パストラバーサル防止、サイズ制限、DB パラメーター化を行う。 |
+| RQ-016 | 保存済みバージョンのプロジェクト設定を編集できる。編集対象はZIP直下の単一 `*.gprj` と `layout.lay` の2 JSONとする。`*.set`、サブディレクトリ内ファイルなど他の全entryはパスとpayload bytesを変更しない。編集結果は元バージョンを上書きせず、新しいバージョンとして保存する。 |
 
 ## 前提と制約
 
@@ -27,3 +28,4 @@
 - `http://localhost` はブラウザー上の secure context として扱われますが、LAN 上のホスト名/IP から使う場合は HTTPS が必要です。
 - コンテナはクライアント PC の `%APPDATA%` を直接参照しません。検索・展開・上書き確認はブラウザーが、共有 ZIP とメタデータの保存はサーバーが担当します。
 - 正規ZIPの例は `Project.gprj` と `measurements/data.bin` がZIP直下から始まる形です。`<uuid>/Project.gprj` は旧形式として1階層だけ入力互換を認めますが、`<uuid>/<uuid>/Project.gprj` は拒否します。
+- `.example` の実データでは `*.gprj` と `layout.lay` がJSON編集対象、`*.set` がbyte-preserve対象です。名前が `layout.lay` ではない `.lay` や未知拡張子は編集対象に含めません。

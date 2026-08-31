@@ -22,6 +22,7 @@ class Settings:
     max_archive_entries: int = 20_000
     max_uncompressed_bytes: int = 8 * 1024 * 1024 * 1024
     max_compression_ratio: int = 250
+    max_configuration_bytes: int = 16 * 1024 * 1024
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -39,6 +40,9 @@ class Settings:
                 os.getenv("MAX_UNCOMPRESSED_BYTES", str(8 * 1024**3))
             ),
             max_compression_ratio=int(os.getenv("MAX_COMPRESSION_RATIO", "250")),
+            max_configuration_bytes=int(
+                os.getenv("MAX_CONFIGURATION_BYTES", str(16 * 1024**2))
+            ),
         )
         if settings.storage_backend != "filesystem":
             raise ValueError(
@@ -49,6 +53,7 @@ class Settings:
             settings.max_archive_entries,
             settings.max_uncompressed_bytes,
             settings.max_compression_ratio,
+            settings.max_configuration_bytes,
         ) <= 0:
             raise ValueError("Archive safety limits must be positive")
         return settings

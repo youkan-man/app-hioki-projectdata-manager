@@ -19,7 +19,7 @@
 - コンテナ再起動後もプロジェクトと2つのZIPが保持される。
 - DBのプロジェクト/バージョン行を消した後、`/api/admin/rebuild-index` がZIP 2件からプロジェクト1件、バージョン2件を再構築する。
 - `compose.storage.example.yaml` のLinux bind mountへ実際にZIPを書き込める。
-- backend pytest 8件、frontend Vitest 15件、frontend production buildが成功する。
+- backend pytest 12件、frontend Vitest 20件、frontend production buildが成功する。
 
 ## ZIPレイアウト追加検証
 
@@ -48,3 +48,30 @@ ZIP layout contract: PASS
 - 社内CA証明書を信頼した別端末から、HTTPSとFile System Access APIが利用できること。
 
 Linux検証では自己署名証明書を使用したため、証明書の信頼性そのものは検証対象外です。
+
+## プロジェクトJSON編集の独立E2E
+
+追加要件 RQ-016 に対し、2026-08-31 に一時SQLite DB・一時アーカイブ領域でFastAPIをHTTP起動し、公開API経路で次を確認しました。同じ環境で2回連続実行して、どちらも成功しています。
+
+- `.example` の3ファイルをflat ZIPとして登録し、版1の2 JSONをAPIで取得できる。
+- `*.gprj` と `layout.lay` の論理値を各1箇所だけ変更する1回のPUTで版2が作られる。
+- 版2では両JSONが要求した内容へ変わり、版1は全entryのpath/payload bytesが不変である。
+- 版2の `.set` とその他全編集対象外entryは版1とpayload bytesが一致する。
+
+実行結果:
+
+```text
+PASS fetched version 1 and edited one value in MKH-PDU電圧モニタ.gprj: ('formatVersion',)
+PASS edited one value in layout.lay: ('paneModelList', 0, 'sheetId')
+PASS created version 2 while all version 1 entry payloads remained unchanged
+PASS preserved 1 opaque payload(s), including 1 .set file(s)
+Configuration editing contract: PASS
+```
+
+一時環境の公開HTTP APIに対して、リポジトリルートから次を実行します。
+
+```bash
+python3 scripts/verify_configuration_edit.py --base-url http://localhost:8080
+```
+
+このverifierは `.example` の実データをflat ZIPとして登録し、APIで `*.gprj` と `layout.lay` を取得して各1つのJSON値だけを変更します。繰り返し実行できるよう、登録用コピーのgprj `id` は実行ごとの `source_uuid` に合わせますが、`.set` とその他の編集対象外ファイルは原本bytesを使います。新版のdownloadで両JSONの変更、旧版の不変性、`.set` とその他全entryのpath/payload bytes一致を検証し、最後に作成プロジェクトを論理削除します。不変アーカイブは設計どおり保存領域に残るため、使い捨て環境だけで実行してください。

@@ -1,4 +1,5 @@
-import type { Project, ProjectId, ProjectVersion, VersionId } from './types'
+import { parseJsonObject } from './json'
+import type { JsonObject, Project, ProjectConfiguration, ProjectId, ProjectVersion, VersionId } from './types'
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ?? ''
 
@@ -99,4 +100,27 @@ export async function restoreDeletedProject(id: ProjectId): Promise<void> {
 export async function downloadArchive(projectId: ProjectId, versionId: VersionId): Promise<Blob> {
   const response = await request(`/api/projects/${encodeURIComponent(projectId)}/versions/${encodeURIComponent(versionId)}/archive`)
   return response.blob()
+}
+
+export async function getProjectConfiguration(projectId: ProjectId): Promise<ProjectConfiguration> {
+  const response = await request(`/api/projects/${encodeURIComponent(projectId)}/configuration`)
+  const body = record(await response.json())
+  const project = record(body.project)
+  const layout = body.layout === null || body.layout === undefined ? null : record(body.layout)
+  return {
+    filename: text(project.filename),
+    version: number(body.version ?? body.version_number),
+    config: parseJsonObject(project.config, 'プロジェクト設定'),
+    layoutFilename: layout ? text(layout.filename, 'layout.lay') : null,
+    layout: layout ? parseJsonObject(layout.config, 'レイアウト') : null,
+  }
+}
+
+export async function saveProjectConfiguration(projectId: ProjectId, values: { config: JsonObject; layout: JsonObject | null; note: string }): Promise<Project> {
+  const response = await request(`/api/projects/${encodeURIComponent(projectId)}/configuration`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project: values.config, layout: values.layout, note: values.note }),
+  })
+  return parseProject(await response.json())
 }

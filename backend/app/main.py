@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import uuid
 import re
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -23,8 +23,24 @@ from .archives import (
 from .config import Settings
 from .db import Base, make_engine, make_session_factory, session_dependency
 from .models import Project, ProjectVersion
-from .schemas import ProjectList, ProjectRead, ProjectUpdate, RebuildResult
-from .service import ProjectDeletedError, import_archive, rebuild_index
+from .schemas import (
+    ConfigurationRead,
+    ConfigurationFileRead,
+    ConfigurationUpdate,
+    ProjectList,
+    ProjectRead,
+    ProjectUpdate,
+    RebuildResult,
+)
+from .service import (
+    ProjectDeletedError,
+    ProjectHasNoVersionsError,
+    ProjectNotFoundError,
+    get_latest_configuration,
+    import_archive,
+    rebuild_index,
+    update_latest_configuration,
+)
 from .storage import FilesystemArchiveStorage
 
 
@@ -154,6 +170,78 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if "description" in update.model_fields_set:
                 project.description = update.description
         return load_project(session, project_id)
+
+    @app.get(
+        "/api/projects/{project_id}/configuration",
+        response_model=ConfigurationRead,
+    )
+    def get_configuration(
+        project_id: uuid.UUID, session: Session = Depends(get_session)
+    ) -> ConfigurationRead:
+        try:
+            state = get_latest_configuration(
+                session, storage, settings, project_id
+            )
+        except (ProjectNotFoundError, ProjectHasNoVersionsError) as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ProjectDeletedError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ArchiveValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except (ArchiveIdentityError, OSError) as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="Project version archive identity is inconsistent",
+            ) from exc
+        return ConfigurationRead(
+            version=state.version_number,
+            project=ConfigurationFileRead(
+                filename=state.document.project.filename,
+                config=state.document.project.config,
+            ),
+            layout=(
+                ConfigurationFileRead(
+                    filename=state.document.layout.filename,
+                    config=state.document.layout.config,
+                )
+                if state.document.layout is not None
+                else None
+            ),
+        )
+
+    @app.put(
+        "/api/projects/{project_id}/configuration",
+        response_model=ProjectRead,
+    )
+    def put_configuration(
+        project_id: uuid.UUID,
+        update: ConfigurationUpdate,
+        session: Session = Depends(get_session),
+    ) -> Project:
+        try:
+            with session.begin():
+                project = update_latest_configuration(
+                    session,
+                    storage,
+                    settings,
+                    project_id,
+                    update.project,
+                    update.layout,
+                    update.note,
+                )
+        except (ProjectNotFoundError, ProjectHasNoVersionsError) as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ProjectDeletedError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ArchiveValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except (ArchiveIdentityError, OSError) as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="Project version archive identity is inconsistent",
+            ) from exc
+        session.refresh(project)
+        return load_project(session, project.id)
 
     @app.delete("/api/projects/{project_id}", response_model=ProjectRead)
     def delete_project(
