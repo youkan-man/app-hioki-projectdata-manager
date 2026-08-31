@@ -190,10 +190,13 @@ https_port="${https_port:-8443}"
 if $start_stack; then
   ((${#docker_command[@]})) || resolve_docker || fail 'Docker daemon is unavailable'
   cd "$repo_root"
-  "${docker_command[@]}" compose -f compose.yaml -f compose.https.yaml \
+  printf 'Compose environment: %s\n' "$env_file"
+  "${docker_command[@]}" compose --env-file "$env_file" \
+    -f compose.yaml -f compose.https.yaml \
     --profile https up -d --build --wait
   # The certificate path stays constant, so force nginx to reload replaced files.
-  "${docker_command[@]}" compose -f compose.yaml -f compose.https.yaml \
+  "${docker_command[@]}" compose --env-file "$env_file" \
+    -f compose.yaml -f compose.https.yaml \
     --profile https up -d --force-recreate --wait web-https
   if command -v curl >/dev/null 2>&1; then
     curl --insecure --fail --silent --show-error \

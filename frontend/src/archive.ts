@@ -24,6 +24,52 @@ export interface ValidatedArchive {
   files: Array<{ relativePath: string[]; bytes: Uint8Array }>
 }
 
+export interface CanonicalFileSelection {
+  archive: Blob
+  sourceUuid: string
+  projectName: string
+  fileName: string
+}
+
+function parseRelativeFilePath(path: string): string[] {
+  if (!path || path.startsWith('/') || path.includes('\\')) throw new Error('選択ファイルの相対パスを取得できません。')
+  const parts = path.split('/')
+  if (parts.length < 2 || parts.some((part) => !part || part === '.' || part === '..')) {
+    throw new Error('選択ディレクトリに安全でない相対パスが含まれています。')
+  }
+  return parts
+}
+
+export async function createCanonicalArchiveFromFiles(selectedFiles: Iterable<File>): Promise<CanonicalFileSelection> {
+  const files = [...selectedFiles]
+  if (!files.length) throw new Error('ディレクトリにファイルがありません。')
+
+  const parsed = files.map((file) => ({ file, parts: parseRelativeFilePath(file.webkitRelativePath) }))
+  const roots = new Set(parsed.map(({ parts }) => parts[0]!))
+  if (roots.size !== 1) throw new Error('選択対象は単一のUUID最上位フォルダーである必要があります。')
+  const sourceUuid = [...roots][0]!
+  if (!UUID_PATTERN.test(sourceUuid)) throw new Error('選択した最上位フォルダー名がUUID形式ではありません。')
+
+  const seenPaths = new Set<string>()
+  for (const { parts } of parsed) {
+    const key = parts.join('/').toLowerCase()
+    if (seenPaths.has(key)) throw new Error('選択ディレクトリに重複したパスがあります。')
+    seenPaths.add(key)
+  }
+  const gprjFiles = parsed.filter(({ parts }) => parts.length === 2 && parts[1]?.toLowerCase().endsWith('.gprj'))
+  if (gprjFiles.length !== 1) throw new Error('UUIDフォルダー直下にプロジェクト本体（*.gprj）が1つ必要です。')
+
+  const archiveFiles: Record<string, Uint8Array> = {}
+  for (const { file, parts } of parsed) archiveFiles[parts.join('/')] = new Uint8Array(await file.arrayBuffer())
+  const projectName = gprjFiles[0]!.parts[1]!.replace(/\.gprj$/i, '')
+  return {
+    archive: new Blob([zipSync(archiveFiles, { level: 6 })], { type: 'application/zip' }),
+    sourceUuid,
+    projectName,
+    fileName: `${sourceUuid}.zip`,
+  }
+}
+
 export function validateCanonicalArchive(bytes: Uint8Array, expectedUuid?: string): ValidatedArchive {
   const unzipped = unzipSync(bytes)
   const files: ValidatedArchive['files'] = []

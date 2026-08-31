@@ -1,5 +1,8 @@
 /// <reference types="vite/client" />
 
+import 'react'
+
+declare global {
 interface FileSystemHandlePermissionDescriptor { mode?: 'read' | 'readwrite' }
 
 interface FileSystemHandle {
@@ -26,4 +29,12 @@ interface FileSystemDirectoryHandle extends FileSystemHandle {
 
 interface Window {
   showDirectoryPicker?: (options?: { mode?: 'read' | 'readwrite'; startIn?: string }) => Promise<FileSystemDirectoryHandle>
+}
+}
+
+declare module 'react' {
+  interface InputHTMLAttributes<T> {
+    webkitdirectory?: string
+    directory?: string
+  }
 }

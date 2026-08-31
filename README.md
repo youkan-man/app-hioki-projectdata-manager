@@ -17,11 +17,11 @@ Linux Dockerホストでリポジトリへ移動し、設定例をコピーし�
 
 ```bash
 cp .env.example .env
-docker compose up -d --build
-docker compose ps
+docker compose --env-file .env up -d --build
+docker compose --env-file .env ps
 ```
 
-ブラウザーで `http://localhost:8080` を開きます。停止は `docker compose down` です。データを残すため、通常運用では `down -v` を実行しないでください。
+ブラウザーで `http://localhost:8080` を開きます。停止は `docker compose --env-file .env down` です。データを残すため、通常運用では `down -v` を実行しないでください。`.env`を変更した場合は、上記の`up -d`またはHTTPS起動スクリプトを再実行してコンテナを再作成します。
 
 初回起動後の流れは次のとおりです。
 
@@ -51,7 +51,7 @@ chmod +x scripts/enable-linux-https.sh
 ./scripts/enable-linux-https.sh --start
 ```
 
-初回だけ候補IPを検出して`.env`へ保存させる場合は`--detect`、設定値を上書きする場合は`--ip 192.168.1.100`を明示します。通常実行では自動検出せず、`.env`の`PUBLIC_IP`を使用します。
+起動スクリプトは実行ディレクトリに関係なく、リポジトリ直下の`.env`をComposeの`--env-file`として明示的に使用します。初回だけ候補IPを検出して`.env`へ保存させる場合は`--detect`、設定値を上書きする場合は`--ip 192.168.1.100`を明示します。通常実行では自動検出せず、`.env`の`PUBLIC_IP`を使用します。
 
 Composeは`.certs`全体をアプリへ公開せず、公開証明書と秘密鍵をnginxの`/etc/nginx/tls/`へ個別にread-only mountします。その後Windowsで`https://192.168.1.100:8443`を開きます。
 
