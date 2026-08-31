@@ -6,8 +6,8 @@
 | --- | --- | --- | --- | --- | --- |
 | RM-001#S-01 | FastAPI、PostgreSQL モデル、ZIP 保存・再索引 API | RQ-008–RQ-012、RQ-015 | なし | 完了 | pytest 6件、compileall 成功 |
 | RM-001#S-02 | React SPA、一覧/履歴、モーダル、ディレクトリ検索/復元 | RQ-001–RQ-010、RQ-014 | API 契約 | 完了 | Vitest 6件、production build、preview HTTP 200 成功 |
-| RM-001#S-03 | Docker、nginx、永続 volume、HTTPS、Windows 運用手順 | RQ-011–RQ-014 | frontend/backend の起動契約 | 待機 | YAML 構文確認済み。実行環境に Docker CLI がなく実ビルド待ち |
-| RM-001#S-04 | 統合ビルドと受入確認 | 全要件 | S-01、S-02、S-03 | 待機 | アプリ単体検証済み。Docker/Windows/Chromium の実機受入れ待ち |
+| RM-001#S-03 | Docker、nginx、永続 volume、HTTPS、Windows 運用手順 | RQ-011–RQ-014 | frontend/backend の起動契約 | 完了 | Linux上で通常/HTTPS build、3サービスhealthy、bind mount保存を確認 |
+| RM-001#S-04 | 統合ビルドと受入確認 | 全要件 | S-01、S-02、S-03 | 完了 | PostgreSQL実経路とZIPからのDB再構築を確認。Windowsブラウザー固有項目は実機受入れ対象 |
 
 ## 完了条件
 

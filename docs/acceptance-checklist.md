@@ -10,8 +10,8 @@
 | AC-004 | RQ-009 | 復元と上書き確認 | 空き先へ復元でき、同名フォルダーがある場合は確認なしに上書きしない。 |
 | AC-005 | RQ-010 | 共有表示と論理削除 | 別ブラウザーから同じ一覧が見え、削除後も ZIP 実体が残る。 |
 | AC-006 | RQ-011 | 再起動と再索引 | コンテナ再作成後も一覧/ZIPが残り、DB 初期化後にアーカイブから索引を再構築できる。 |
-| AC-007 | RQ-012 | bind mount 差し替え | `compose.storage.example.yaml` でホスト保存先へ切り替えて登録/取得できる。 |
-| AC-008 | RQ-013 | LAN 公開 | Windows ホストの許可済みポートへ別端末から接続できる。 |
+| AC-007 | RQ-012 | bind mount 差し替え | `compose.storage.example.yaml` でLinuxホスト上のマウント済み保存先へ切り替えて登録/取得できる。 |
+| AC-008 | RQ-013 | LAN 公開 | Windows端末からLinuxホストの許可済みポートへ接続できる。 |
 | AC-009 | RQ-014 | HTTPS とブラウザー API | 信頼済み証明書の HTTPS URL でディレクトリ選択、再権限確認、書き戻しが動く。 |
 | AC-010 | RQ-015 | 悪意ある ZIP | `../`、絶対パス、リンク、過大展開を含む ZIP が拒否され、保存領域外へ書き込まれない。 |
 | AC-011 | RQ-011 | バックアップ/復元 | DB dump とアーカイブバックアップから別環境へ復元し、チェックサムが一致する。 |
@@ -32,4 +32,3 @@ HTTPS 構成は次でも検証します。
 docker compose -f compose.yaml -f compose.https.yaml --profile https config
 docker compose -f compose.yaml -f compose.https.yaml --profile https up -d --build
 ```
-

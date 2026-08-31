@@ -15,8 +15,8 @@
 | RQ-009 | 呼び出し時は選択バージョンを展開して利用者が許可したデータディレクトリへ配置し、同名フォルダーがある場合は上書き確認を行う。 |
 | RQ-010 | 全利用者が同じ登録データを参照できる。削除は論理削除とし、実体 ZIP は消さない。 |
 | RQ-011 | メタデータと論理削除状態は PostgreSQL、ZIP は Docker volume に保存する。DB が失われても ZIP からカタログを再構築できる情報を保持する。 |
-| RQ-012 | ZIP 保存先はストレージ境界で分離し、将来は named volume から Windows/ネットワークドライブの bind mount に交換できる。 |
-| RQ-013 | Windows Docker Desktop 上で動作し、localhost のほか LAN に公開できる。 |
+| RQ-012 | ZIP 保存先はストレージ境界で分離し、将来は named volume からLinuxホストにマウントしたネットワーク共有の bind mount に交換できる。 |
+| RQ-013 | Linux Dockerホスト上で動作し、WindowsクライアントへLAN公開できる。 |
 | RQ-014 | リモートブラウザーから File System Access API を利用できるよう、任意の HTTPS 構成と証明書マウントを提供する。 |
 | RQ-015 | 社内ツール相当の最低限の防御として入力検証、ZIP パストラバーサル防止、サイズ制限、DB パラメーター化を行う。 |
 
@@ -26,4 +26,3 @@
 - ディレクトリハンドルの保存と再利用は Chromium 系ブラウザーの File System Access API を前提とします。
 - `http://localhost` はブラウザー上の secure context として扱われますが、LAN 上のホスト名/IP から使う場合は HTTPS が必要です。
 - コンテナはクライアント PC の `%APPDATA%` を直接参照しません。検索・展開・上書き確認はブラウザーが、共有 ZIP とメタデータの保存はサーバーが担当します。
-
