@@ -19,7 +19,26 @@
 - コンテナ再起動後もプロジェクトと2つのZIPが保持される。
 - DBのプロジェクト/バージョン行を消した後、`/api/admin/rebuild-index` がZIP 2件からプロジェクト1件、バージョン2件を再構築する。
 - `compose.storage.example.yaml` のLinux bind mountへ実際にZIPを書き込める。
-- backend pytest 6件、frontend Vitest 6件、frontend production buildが成功する。
+- backend pytest 8件、frontend Vitest 15件、frontend production buildが成功する。
+
+## ZIPレイアウト追加検証
+
+追加要件 RQ-007–RQ-009 に対し、2026-08-31 に一時SQLite DB・一時アーカイブ領域でFastAPIをHTTP起動し、実際の公開APIへ `scripts/verify_zip_layout.py` を実行しました。
+
+- flat ZIPをmultipartの `source_uuid` なし、`<uuid>.zip` ファイル名だけで登録できる。
+- flat入力をdownloadすると、`*.gprj` とサブディレクトリがZIP直下から始まり、UUIDラッパーがない。
+- UUIDラッパーが1階層ある旧ZIP入力を登録でき、保存/download時はflatへ正規化される。
+- `<uuid>/<uuid>/*.gprj` の二重ラッパー入力は HTTP 400 で拒否される。
+- verifierは作成レコードを最後に論理削除し、3ケースすべて `PASS` で終了した。
+
+実行結果:
+
+```text
+PASS flat input -> flat download (filename UUID inference)
+PASS legacy UUID wrapper input -> flat download
+PASS double UUID wrapper rejected
+ZIP layout contract: PASS
+```
 
 ## Windows実機での受入れ対象
 

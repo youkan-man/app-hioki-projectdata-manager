@@ -4,7 +4,7 @@ export const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0
 
 async function collectFiles(directory: FileSystemDirectoryHandle, prefix: string, result: Record<string, Uint8Array>): Promise<void> {
   for await (const [name, handle] of directory.entries()) {
-    const path = `${prefix}/${name}`
+    const path = prefix ? `${prefix}/${name}` : name
     if (handle.kind === 'directory') await collectFiles(handle, path, result)
     else result[path] = new Uint8Array(await (await handle.getFile()).arrayBuffer())
   }
@@ -13,14 +13,15 @@ async function collectFiles(directory: FileSystemDirectoryHandle, prefix: string
 export async function createCanonicalArchive(sourceUuid: string, directory: FileSystemDirectoryHandle): Promise<Blob> {
   if (!UUID_PATTERN.test(sourceUuid)) throw new Error('保存元フォルダー名がUUIDではありません。')
   const files: Record<string, Uint8Array> = {}
-  await collectFiles(directory, sourceUuid, files)
-  const gprjFiles = Object.keys(files).filter((path) => path.split('/').length === 2 && path.toLowerCase().endsWith('.gprj'))
+  await collectFiles(directory, '', files)
+  const gprjFiles = Object.keys(files).filter((path) => !path.includes('/') && path.toLowerCase().endsWith('.gprj'))
   if (gprjFiles.length !== 1) throw new Error('UUIDフォルダー直下にプロジェクト本体（*.gprj）が1つ必要です。')
   return new Blob([zipSync(files, { level: 6 })], { type: 'application/zip' })
 }
 
 export interface ValidatedArchive {
   rootUuid: string
+  layout: 'flat' | 'wrapped'
   files: Array<{ relativePath: string[]; bytes: Uint8Array }>
 }
 
@@ -60,7 +61,7 @@ export async function createCanonicalArchiveFromFiles(selectedFiles: Iterable<Fi
   if (gprjFiles.length !== 1) throw new Error('UUIDフォルダー直下にプロジェクト本体（*.gprj）が1つ必要です。')
 
   const archiveFiles: Record<string, Uint8Array> = {}
-  for (const { file, parts } of parsed) archiveFiles[parts.join('/')] = new Uint8Array(await file.arrayBuffer())
+  for (const { file, parts } of parsed) archiveFiles[parts.slice(1).join('/')] = new Uint8Array(await file.arrayBuffer())
   const projectName = gprjFiles[0]!.parts[1]!.replace(/\.gprj$/i, '')
   return {
     archive: new Blob([zipSync(archiveFiles, { level: 6 })], { type: 'application/zip' }),
@@ -72,19 +73,39 @@ export async function createCanonicalArchiveFromFiles(selectedFiles: Iterable<Fi
 
 export function validateCanonicalArchive(bytes: Uint8Array, expectedUuid?: string): ValidatedArchive {
   const unzipped = unzipSync(bytes)
-  const files: ValidatedArchive['files'] = []
-  const roots = new Set<string>()
+  const entries: Array<{ parts: string[]; bytes: Uint8Array; directory: boolean }> = []
   for (const [rawPath, content] of Object.entries(unzipped)) {
     const parts = rawPath.replace(/\\/g, '/').split('/').filter(Boolean)
     if (!parts.length || parts.some((part) => part === '.' || part === '..')) throw new Error('ZIPに安全でないパスが含まれています。')
-    roots.add(parts[0]!)
-    if (!rawPath.endsWith('/')) files.push({ relativePath: parts.slice(1), bytes: content })
+    entries.push({ parts, bytes: content, directory: rawPath.endsWith('/') })
   }
-  if (roots.size !== 1) throw new Error('ZIPの最上位は単一のUUIDフォルダーである必要があります。')
-  const rootUuid = [...roots][0]!
-  if (!UUID_PATTERN.test(rootUuid)) throw new Error('ZIPの最上位フォルダーがUUIDではありません。')
-  if (expectedUuid && rootUuid.toLowerCase() !== expectedUuid.toLowerCase()) throw new Error('ZIPのUUIDがプロジェクト情報と一致しません。')
+  const roots = new Set(entries.map(({ parts }) => parts[0]!))
+  const possibleWrapper = roots.size === 1 ? [...roots][0]! : null
+  const layout: ValidatedArchive['layout'] = possibleWrapper && UUID_PATTERN.test(possibleWrapper) ? 'wrapped' : 'flat'
+  if (expectedUuid && !UUID_PATTERN.test(expectedUuid)) throw new Error('指定されたプロジェクトUUIDがcanonical形式ではありません。')
+  if (layout === 'flat' && !expectedUuid) throw new Error('UUIDラッパーなしZIPは、ファイル名を「UUID.zip」にしてください。')
+  const rootUuid = layout === 'wrapped' ? possibleWrapper! : expectedUuid!
+  if (expectedUuid && rootUuid !== expectedUuid) throw new Error('ZIPのUUIDがプロジェクト情報と一致しません。')
+  const files: ValidatedArchive['files'] = entries
+    .filter(({ directory }) => !directory)
+    .map(({ parts, bytes: content }) => ({ relativePath: layout === 'wrapped' ? parts.slice(1) : parts, bytes: content }))
   const gprjFiles = files.filter(({ relativePath }) => relativePath.length === 1 && relativePath[0]?.toLowerCase().endsWith('.gprj'))
   if (gprjFiles.length !== 1) throw new Error('UUIDフォルダー直下にプロジェクト本体（*.gprj）が1つ必要です。')
-  return { rootUuid, files }
+  return { rootUuid, layout, files }
+}
+
+export function uuidFromArchiveFileName(fileName: string): string | null {
+  const match = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:-v[0-9]+)?\.zip$/.exec(fileName)
+  return match?.[1] ?? null
+}
+
+export function validateUploadedArchive(bytes: Uint8Array, fileName: string): ValidatedArchive {
+  try {
+    // A legacy wrapped archive is authoritative and does not depend on its filename.
+    return validateCanonicalArchive(bytes)
+  } catch (wrappedOrFlatError) {
+    const uuidHint = uuidFromArchiveFileName(fileName)
+    if (!uuidHint) throw wrappedOrFlatError
+    return validateCanonicalArchive(bytes, uuidHint)
+  }
 }

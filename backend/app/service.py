@@ -105,13 +105,13 @@ def rebuild_index(
             counts.archives_skipped += 1
             continue
         try:
+            source_uuid = uuid.UUID(key_parts[0])
+            if key_parts[0] != str(source_uuid):
+                raise ValueError("Archive key UUID is not canonical")
             with storage.open(key) as archive_file:
-                validated = validate_stored(archive_file, settings)
+                validated = validate_stored(archive_file, settings, source_uuid)
             expected_digest = key_parts[-1][9:-4]
-            if (
-                key_parts[0] != str(validated.source_uuid)
-                or expected_digest != validated.sha256
-            ):
+            if expected_digest != validated.sha256:
                 counts.archives_skipped += 1
                 continue
             version_number = int(match.group("version"))

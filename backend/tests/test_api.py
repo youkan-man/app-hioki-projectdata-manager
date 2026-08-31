@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import stat
 import uuid
 import zipfile
@@ -20,9 +21,17 @@ def make_zip(
 ) -> bytes:
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr(f"{source_uuid}/{name}.gprj", b"gennect-project")
+        archive.writestr(f"{name}.gprj", b"gennect-project")
         for path, content in (extra or {}).items():
             archive.writestr(path, content)
+    return output.getvalue()
+
+
+def make_legacy_zip(source_uuid: uuid.UUID, name: str = "Legacy") -> bytes:
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(f"{source_uuid}/{name}.gprj", b"legacy-project")
+        archive.writestr(f"{source_uuid}/attachments/readme.txt", b"legacy-data")
     return output.getvalue()
 
 
@@ -44,7 +53,10 @@ def client(tmp_path: Path):
 def import_project(client: TestClient, source_uuid: uuid.UUID, name: str = "Demo"):
     return client.post(
         "/api/projects/import",
-        files={"archive": ("project.zip", make_zip(source_uuid, name), "application/zip")},
+        data={"source_uuid": str(source_uuid)},
+        files={
+            "archive": (f"{source_uuid}.zip", make_zip(source_uuid, name), "application/zip")
+        },
     )
 
 
@@ -114,20 +126,22 @@ def test_archive_metadata_must_match(client):
         ),
         (
             lambda source_uuid: make_zip(
-                source_uuid, extra={f"{source_uuid}/second.gprj": b"duplicate"}
+                source_uuid, extra={"second.gprj": b"duplicate"}
             ),
-            "exactly one direct .gprj",
+            "exactly one root-level .gprj",
         ),
     ],
 )
 def test_rejects_unsafe_or_ambiguous_zip(client, builder, detail):
     test_client, _ = client
+    source_uuid = uuid.uuid4()
     response = test_client.post(
         "/api/projects/import",
+        data={"source_uuid": str(source_uuid)},
         files={
             "archive": (
                 "project.zip",
-                builder(uuid.uuid4()),
+                builder(source_uuid),
                 "application/zip",
             )
         },
@@ -136,19 +150,76 @@ def test_rejects_unsafe_or_ambiguous_zip(client, builder, detail):
     assert detail in response.json()["detail"]
 
 
+def test_uuid_can_be_inferred_and_legacy_wrapper_is_normalized(client):
+    test_client, tmp_path = client
+    source_uuid = uuid.uuid4()
+    inferred = test_client.post(
+        "/api/projects/import",
+        files={
+            "archive": (
+                f"{source_uuid}.zip",
+                make_zip(source_uuid, "Inferred"),
+                "application/zip",
+            )
+        },
+    )
+    assert inferred.status_code == 201, inferred.text
+    assert inferred.json()["source_uuid"] == str(source_uuid)
+
+    legacy_uuid = uuid.uuid4()
+    legacy = test_client.post(
+        "/api/projects/import",
+        files={
+            "archive": (
+                "legacy.zip",
+                make_legacy_zip(legacy_uuid),
+                "application/zip",
+            )
+        },
+    )
+    assert legacy.status_code == 201, legacy.text
+    stored_path = next(
+        (tmp_path / "archives" / str(legacy_uuid)).glob("*.zip")
+    )
+    with zipfile.ZipFile(stored_path) as archive:
+        assert sorted(archive.namelist()) == ["Legacy.gprj", "attachments/readme.txt"]
+    version_id = legacy.json()["versions"][0]["id"]
+    downloaded = test_client.get(
+        f"/api/projects/{legacy.json()['id']}/versions/{version_id}/archive"
+    )
+    assert downloaded.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(downloaded.content)) as archive:
+        assert sorted(archive.namelist()) == ["Legacy.gprj", "attachments/readme.txt"]
+
+    mismatch = test_client.post(
+        "/api/projects/import",
+        data={"source_uuid": str(uuid.uuid4())},
+        files={
+            "archive": (
+                "legacy.zip",
+                make_legacy_zip(legacy_uuid),
+                "application/zip",
+            )
+        },
+    )
+    assert mismatch.status_code == 422
+    assert "does not match" in mismatch.json()["detail"]
+
+
 def test_rejects_symlink_zip_bomb_and_excess_entries(client):
     test_client, _ = client
     source_uuid = uuid.uuid4()
 
     symlink = io.BytesIO()
     with zipfile.ZipFile(symlink, "w") as archive:
-        archive.writestr(f"{source_uuid}/Demo.gprj", b"project")
-        link = zipfile.ZipInfo(f"{source_uuid}/shortcut")
+        archive.writestr("Demo.gprj", b"project")
+        link = zipfile.ZipInfo("shortcut")
         link.create_system = 3
         link.external_attr = (stat.S_IFLNK | 0o777) << 16
         archive.writestr(link, "target")
     symlink_response = test_client.post(
         "/api/projects/import",
+        data={"source_uuid": str(source_uuid)},
         files={"archive": ("symlink.zip", symlink.getvalue(), "application/zip")},
     )
     assert symlink_response.status_code == 400
@@ -159,19 +230,21 @@ def test_rejects_symlink_zip_bomb_and_excess_entries(client):
         files={
             "archive": (
                 "bomb.zip",
-                make_zip(source_uuid, extra={f"{source_uuid}/zeros.bin": b"0" * 1_000_000}),
+                make_zip(source_uuid, extra={"zeros.bin": b"0" * 1_000_000}),
                 "application/zip",
             )
         },
+        data={"source_uuid": str(source_uuid)},
     )
     assert bomb_response.status_code == 400
     assert "compression ratio" in bomb_response.json()["detail"]
 
     too_many = {
-        f"{source_uuid}/data-{number}.bin": b"x" for number in range(5)
+        f"data-{number}.bin": b"x" for number in range(5)
     }
     entry_response = test_client.post(
         "/api/projects/import",
+        data={"source_uuid": str(source_uuid)},
         files={
             "archive": (
                 "many.zip",
@@ -203,3 +276,35 @@ def test_rebuilds_database_index_from_archives(client):
     listed = test_client.get("/api/projects").json()
     assert listed["total"] == 1
     assert listed["items"][0]["source_uuid"] == str(source_uuid)
+
+
+def test_rebuilds_and_downloads_legacy_stored_archive(client):
+    test_client, tmp_path = client
+    source_uuid = uuid.uuid4()
+    legacy_bytes = make_legacy_zip(source_uuid, "Recovered Legacy")
+    digest = hashlib.sha256(legacy_bytes).hexdigest()
+    archive_path = (
+        tmp_path
+        / "archives"
+        / str(source_uuid)
+        / f"00000001-{digest}.zip"
+    )
+    archive_path.parent.mkdir(parents=True)
+    archive_path.write_bytes(legacy_bytes)
+
+    rebuilt = test_client.post("/api/admin/rebuild-index")
+    assert rebuilt.status_code == 200, rebuilt.text
+    assert rebuilt.json()["projects_created"] == 1
+    assert rebuilt.json()["versions_created"] == 1
+
+    project = test_client.get("/api/projects").json()["items"][0]
+    downloaded = test_client.get(
+        f"/api/projects/{project['id']}/versions/{project['versions'][0]['id']}/archive"
+    )
+    assert downloaded.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(downloaded.content)) as archive:
+        assert sorted(archive.namelist()) == [
+            "Recovered Legacy.gprj",
+            "attachments/readme.txt",
+        ]
+        assert all(not name.startswith(f"{source_uuid}/") for name in archive.namelist())

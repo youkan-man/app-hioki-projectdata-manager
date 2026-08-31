@@ -10,8 +10,13 @@ Configuration:
 - `REBUILD_INDEX_ON_STARTUP=true` to recover missing metadata from stored archives
 - `MAX_UPLOAD_BYTES`, `MAX_ARCHIVE_ENTRIES`, `MAX_UNCOMPRESSED_BYTES`, `MAX_COMPRESSION_RATIO`
 
-The accepted ZIP shape is one canonical UUID top-level directory containing exactly
-one direct `*.gprj` file. Imports reject traversal, backslashes, Windows-unsafe names,
+The canonical ZIP contains the project folder's contents directly at ZIP root, including
+exactly one root-level `*.gprj` file. The UUID travels as the multipart `source_uuid`
+(or is inferred from a canonical `<uuid>.zip` / `<uuid>-vN.zip` filename). Legacy ZIPs
+with one UUID wrapper directory are still accepted and normalized before storage; legacy
+archives already present in storage are normalized when downloaded. Restoring therefore
+never creates a duplicated UUID directory. Imports reject
+traversal, backslashes, Windows-unsafe names,
 symlinks, encryption, duplicate paths, corrupt members, excessive entry counts,
 expanded sizes, and compression ratios.
 

@@ -27,9 +27,9 @@ docker compose --env-file .env ps
 
 1. 設定または新規登録モーダルから `%APPDATA%\gennect-space\data` を選択します。
 2. UUID（例: `de795586-5cdb-4ca9-a472-938a1fbfb341`）のフォルダー内にある `*.gprj` がプロジェクト名として一覧化されます。
-3. 対象を登録すると UUID フォルダー全体が ZIP 化され、新しいバージョンとして共有保存されます。
-4. 代わりに ZIP ファイルを新規登録モーダルへ直接指定できます。
-5. 履歴から復元を選ぶと ZIP が展開され、許可済みデータディレクトリへ戻ります。同じ UUID フォルダーがあれば、上書き確認後に続行します。
+3. 対象を登録すると UUID フォルダーの中身だけが ZIP 化され、新しいバージョンとして共有保存されます。ZIP直下には `*.gprj` とプロジェクト内のファイル/サブディレクトリが置かれ、UUIDフォルダー自体は入りません。
+4. 代わりに ZIP ファイルを新規登録モーダルへ直接指定できます。正規形式は中身がZIP直下にあるflat形式です。移行互換としてUUIDフォルダーが1階層だけ付いた旧ZIPも入力できますが、保存時にflat形式へ正規化されます。
+5. 履歴から復元を選ぶと、許可済みデータディレクトリ内にUUIDフォルダーを1回だけ作り、その中へZIP直下の中身を展開します。`UUID/UUID` の二重ディレクトリは作りません。同じ UUID フォルダーがあれば、上書き確認後に続行します。
 
 削除操作は論理削除です。通常一覧からレコードは除外されますが、アーカイブ ZIP 自体は削除しません。また、認証や利用者別のアクセス制御はなく、サーバーへ到達できる利用者には全登録データが見えます。
 
@@ -120,6 +120,14 @@ docker compose ps
 docker compose logs --tail 200 web backend db
 docker compose config
 ```
+
+使い捨ての検証環境では、flat ZIP、旧UUIDラッパーZIPのflat正規化、二重ラッパー拒否を独立スクリプトで確認できます。
+
+```bash
+python3 scripts/verify_zip_layout.py --base-url http://localhost:8080
+```
+
+このスクリプトが作るランダムUUIDのプロジェクトは最後に論理削除されますが、論理削除仕様によりアーカイブZIPは残ります。本番環境では実行しないでください。
 
 アップデートはバックアップ後に `docker compose up -d --build` を実行します。構成と受入手順は [簡易要件](docs/requirements.md)、[簡易設計](docs/architecture.md)、[ロードマップ](docs/roadmap.md)、[受入チェック](docs/acceptance-checklist.md)、[Linux Docker検証記録](docs/verification.md) を参照してください。
 

@@ -1,18 +1,34 @@
-import { zipSync } from 'fflate'
+import { unzipSync, zipSync } from 'fflate'
 import { describe, expect, it } from 'vitest'
-import { createCanonicalArchiveFromFiles, validateCanonicalArchive } from './archive'
+import { createCanonicalArchiveFromFiles, uuidFromArchiveFileName, validateCanonicalArchive, validateUploadedArchive } from './archive'
 
 const uuid = 'de795586-5cdb-4ca9-a472-938a1fbfb341'
 
 describe('validateCanonicalArchive', () => {
-  it('accepts a single UUID root containing a gprj', () => {
+  it('accepts a legacy UUID-wrapped archive and normalizes its paths', () => {
     const zip = zipSync({ [`${uuid}/sample.gprj`]: new Uint8Array([1, 2]) })
-    expect(validateCanonicalArchive(zip, uuid).rootUuid).toBe(uuid)
+    expect(validateCanonicalArchive(zip)).toMatchObject({ rootUuid: uuid, layout: 'wrapped', files: [{ relativePath: ['sample.gprj'] }] })
   })
 
-  it('rejects multiple roots', () => {
-    const zip = zipSync({ [`${uuid}/sample.gprj`]: new Uint8Array(), 'other/file.txt': new Uint8Array() })
-    expect(() => validateCanonicalArchive(zip)).toThrow('単一のUUID')
+  it('accepts a flat archive when its UUID is supplied', () => {
+    const zip = zipSync({ 'sample.gprj': new Uint8Array([1]), 'measurements/data.bin': new Uint8Array([2]) })
+    expect(validateCanonicalArchive(zip, uuid)).toMatchObject({ rootUuid: uuid, layout: 'flat' })
+  })
+
+  it('requires a UUID hint for a flat archive', () => {
+    const zip = zipSync({ 'sample.gprj': new Uint8Array([1]) })
+    expect(() => validateCanonicalArchive(zip)).toThrow('UUID.zip')
+  })
+
+  it.each([`${uuid}.zip`, `${uuid}-v12.zip`])('accepts a flat upload named %s', (fileName) => {
+    const zip = zipSync({ 'sample.gprj': new Uint8Array([1]) })
+    expect(validateUploadedArchive(zip, fileName)).toMatchObject({ rootUuid: uuid, layout: 'flat' })
+    expect(uuidFromArchiveFileName(fileName)).toBe(uuid)
+  })
+
+  it('accepts a legacy wrapped upload regardless of its filename', () => {
+    const zip = zipSync({ [`${uuid}/sample.gprj`]: new Uint8Array([1]) })
+    expect(validateUploadedArchive(zip, 'legacy-backup.zip')).toMatchObject({ rootUuid: uuid, layout: 'wrapped' })
   })
 
   it('rejects an archive without a gprj', () => {
@@ -49,7 +65,11 @@ describe('createCanonicalArchiveFromFiles', () => {
       directoryFile(`${uuid}/measurements/data.bin`, 'measurement'),
     ])
     expect(selected).toMatchObject({ sourceUuid: uuid, projectName: 'Factory', fileName: `${uuid}.zip` })
-    const validated = validateCanonicalArchive(await blobBytes(selected.archive), uuid)
+    const bytes = await blobBytes(selected.archive)
+    expect(Object.keys(unzipSync(bytes))).toEqual(expect.arrayContaining(['Factory.gprj', 'measurements/data.bin']))
+    expect(Object.keys(unzipSync(bytes)).some((path) => path.startsWith(`${uuid}/`))).toBe(false)
+    const validated = validateCanonicalArchive(bytes, uuid)
+    expect(validated.layout).toBe('flat')
     expect(validated.files.map((file) => file.relativePath.join('/'))).toEqual(expect.arrayContaining(['Factory.gprj', 'measurements/data.bin']))
   })
 

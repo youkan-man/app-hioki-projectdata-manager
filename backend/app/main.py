@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+import re
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -12,13 +13,43 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from .archives import ArchiveValidationError, receive_and_validate
+from .archives import (
+    ArchiveIdentityError,
+    ArchiveValidationError,
+    SourceUuidRequiredError,
+    prepare_flat_download,
+    receive_and_validate,
+)
 from .config import Settings
 from .db import Base, make_engine, make_session_factory, session_dependency
 from .models import Project, ProjectVersion
 from .schemas import ProjectList, ProjectRead, ProjectUpdate, RebuildResult
 from .service import ProjectDeletedError, import_archive, rebuild_index
 from .storage import FilesystemArchiveStorage
+
+
+_ARCHIVE_FILENAME = re.compile(
+    r"^(?P<uuid>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
+    r"(?:-v[0-9]+)?\.zip$",
+    re.IGNORECASE,
+)
+
+
+def _source_uuid_from_request(raw: str | None, filename: str | None) -> uuid.UUID | None:
+    candidate = raw
+    if not candidate and filename:
+        # Canonical uploads use <uuid>.zip; downloaded versions use <uuid>-vN.zip.
+        match = _ARCHIVE_FILENAME.fullmatch(filename)
+        candidate = match.group("uuid") if match else None
+    if not candidate:
+        return None
+    try:
+        parsed = uuid.UUID(candidate)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="source_uuid is invalid") from exc
+    if raw is not None and candidate.lower() != str(parsed):
+        raise HTTPException(status_code=422, detail="source_uuid must use canonical form")
+    return parsed
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -85,21 +116,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         note: Annotated[str | None, Form(max_length=10_000)] = None,
         session: Session = Depends(get_session),
     ) -> Project:
+        supplied_uuid = _source_uuid_from_request(source_uuid, archive.filename)
         try:
-            validated = await receive_and_validate(archive, settings)
+            validated = await receive_and_validate(archive, settings, supplied_uuid)
+        except (ArchiveIdentityError, SourceUuidRequiredError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except ArchiveValidationError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         try:
-            if source_uuid is not None:
-                try:
-                    supplied_uuid = uuid.UUID(source_uuid)
-                except ValueError as exc:
-                    raise HTTPException(status_code=422, detail="source_uuid is invalid") from exc
-                if supplied_uuid != validated.source_uuid:
-                    raise HTTPException(
-                        status_code=422,
-                        detail="source_uuid does not match the archive root directory",
-                    )
             if project_name is not None and project_name != validated.project_name:
                 raise HTTPException(
                     status_code=422,
@@ -164,10 +188,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if version is None:
             raise HTTPException(status_code=404, detail="Project version not found")
 
-        def stream():
+        try:
             with storage.open(version.archive_key) as archive_file:
-                while chunk := archive_file.read(1024 * 1024):
-                    yield chunk
+                download_path = prepare_flat_download(
+                    archive_file, settings, version.project.source_uuid
+                )
+        except (ArchiveValidationError, ArchiveIdentityError, OSError) as exc:
+            raise HTTPException(
+                status_code=500, detail="Stored project archive is invalid"
+            ) from exc
+
+        def stream():
+            try:
+                with download_path.open("rb") as archive_file:
+                    while chunk := archive_file.read(1024 * 1024):
+                        yield chunk
+            finally:
+                download_path.unlink(missing_ok=True)
 
         filename = f"{version.project.source_uuid}-v{version.version_number}.zip"
         return StreamingResponse(
