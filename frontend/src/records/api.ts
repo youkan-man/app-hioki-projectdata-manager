@@ -3,7 +3,7 @@ export type RecordFile = {
   id: string; project_id: string | null; project_name: string | null; project_deleted: boolean;
   filename: string; name: string; note: string; sha256: string; size_bytes: number;
   started_at: string | null; ended_at: string | null; duration_seconds: number | null;
-  time_source: string; created_at: string; deleted_at: string | null; revision: number;
+  time_source: 'unknown' | 'manual' | 'table' | 'companion-csv'; created_at: string; deleted_at: string | null; revision: number;
   has_companion_csv: boolean;
   inspection: { format: string; status: 'ready' | 'unavailable'; message: string; tables: TableInfo[]; warnings: string[] }
 }

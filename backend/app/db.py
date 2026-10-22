@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 from sqlalchemy import Engine, create_engine
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -13,7 +14,10 @@ class Base(DeclarativeBase):
 
 def make_engine(database_url: str) -> Engine:
     kwargs: dict[str, object] = {"pool_pre_ping": True}
-    if database_url in {"sqlite://", "sqlite:///:memory:"}:
+    url = make_url(database_url)
+    # Driver-qualified URLs must share the same in-memory database across the
+    # application's lifespan and request worker threads as unqualified URLs.
+    if url.get_backend_name() == "sqlite" and url.database in {None, "", ":memory:"}:
         kwargs.update(
             connect_args={"check_same_thread": False},
             poolclass=StaticPool,
@@ -31,4 +35,3 @@ def session_dependency(factory: sessionmaker[Session]):
             yield session
 
     return get_session
-
