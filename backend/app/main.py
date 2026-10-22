@@ -23,6 +23,7 @@ from .archives import (
 from .config import Settings
 from .db import Base, make_engine, make_session_factory, session_dependency
 from .models import Project, ProjectVersion
+from .record_routes import register_record_routes
 from .schemas import (
     ConfigurationRead,
     ConfigurationFileRead,
@@ -94,6 +95,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.storage = storage
     app.state.session_factory = session_factory
     get_session = session_dependency(session_factory)
+    register_record_routes(app)
 
     def load_project(session: Session, project_id: uuid.UUID) -> Project:
         project = session.scalar(
@@ -241,7 +243,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 detail="Project version archive identity is inconsistent",
             ) from exc
         session.refresh(project)
-        return load_project(session, project.id)
+        return load_project(session, project_id)
 
     @app.delete("/api/projects/{project_id}", response_model=ProjectRead)
     def delete_project(
